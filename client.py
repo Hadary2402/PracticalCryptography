@@ -1,27 +1,20 @@
 import socket
 import threading
 import hashlib
-import signal
-import sys
+from tkinter import *
+from tkinter import messagebox
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
-from termcolor import colored
 from Crypto.Util.Padding import pad, unpad
 import os
-from colorama import init
-init(autoreset=True)
-
 
 # Constants
 MAX_LEN = 1024
-NUM_COLORS = 6
 SERVER_PORT = 8888
 SERVER_IP = "127.0.0.1"
 PUBLIC_KEY_FILE = "server_public_key.pem"
 CHAT_HISTORY_FILE = "chathistory.txt"
 CHAT_KEY_FILE = "chat_key.txt"
-exit_flag = False
-colors = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan']
 
 # Global variables
 client_socket = None
@@ -36,47 +29,25 @@ def load_server_public_key():
     """Loads the server's public key."""
     global server_public_key
     if not os.path.exists(PUBLIC_KEY_FILE):
-        print("Server public key not found. Ensure the server is running and the key file is available.")
+        messagebox.showerror("Error", "Server public key not found.")
         sys.exit(1)
     with open(PUBLIC_KEY_FILE, "rb") as key_file:
         server_public_key = RSA.import_key(key_file.read())
-    print("Server public key loaded successfully.")
 
 def rsa_encrypt(message):
     """Encrypt a message using the server's public key."""
     cipher = PKCS1_OAEP.new(server_public_key)
     return cipher.encrypt(message)
 
-def rsa_decrypt(encrypted_message):
-    """Decrypt a message using the server's private key (not used here)."""
-    return encrypted_message  # This is unused as we don't need to decrypt on the client side
-
 def aes_encrypt(data, key):
     """Encrypt data using AES."""
-    cipher = AES.new(key, AES.MODE_CBC, iv=key[:16])  # IV is derived from the session key
+    cipher = AES.new(key, AES.MODE_CBC, iv=key[:16])
     return cipher.encrypt(pad(data, AES.block_size))
 
 def aes_decrypt(data, key):
     """Decrypt data using AES."""
-    cipher = AES.new(key, AES.MODE_CBC, iv=key[:16])  # IV is derived from the session key
+    cipher = AES.new(key, AES.MODE_CBC, iv=key[:16])
     return unpad(cipher.decrypt(data), AES.block_size)
-
-def write_user_data(name, hashed_password):
-    """Writes user data to a file."""
-    with open("userdata.txt", "a") as f:
-        f.write(f"{name} {hashed_password}\n")
-
-def read_user_data(name):
-    """Reads user data from a file."""
-    try:
-        with open("userdata.txt", "r") as f:
-            for line in f:
-                stored_name, stored_password = line.strip().split()
-                if stored_name == name:
-                    return stored_password
-    except FileNotFoundError:
-        pass
-    return None
 
 def save_chat_history(message):
     """Encrypts and saves chat history to a file."""
@@ -84,135 +55,121 @@ def save_chat_history(message):
     with open(CHAT_HISTORY_FILE, "ab") as f:
         f.write(encrypted_message + b"\n")
 
-
-def save_chat_key():
-    """Saves the AES key to a file."""
-    with open(CHAT_KEY_FILE, "wb") as f:
-        f.write(session_key)
-    print("Chat encryption key saved.")
-
-def signup():
-    """Handles user signup."""
-    name = input("Enter name: ").strip()
-    password = input("Enter password: ").strip()
-    hashed_password = hash_password(password)
-    write_user_data(name, hashed_password)
-    print("Signup successful!")
-    return True
-
-def login():
-    """Handles user login."""
-    global client_socket
-    name = input("Enter your name: ").strip()
-    password = input("Enter password: ").strip()
-    hashed_password = hash_password(password)
-    stored_password = read_user_data(name)
-    if stored_password and stored_password == hashed_password:
-        encrypted_name = aes_encrypt(name.encode('utf-8'), session_key)
-        client_socket.send(encrypted_name)
-        print(f"Login successful!\n{colored(f'Welcome back {name}!', 'cyan')}")
-        return True
-    print("Login failed!")
-    return False
-
-def signal_handler(signal, frame):
-    """Handles Ctrl+C signal for a graceful shutdown."""
-    global exit_flag
-    encrypted_exit_message = aes_encrypt("#exit".encode('utf-8'), session_key)
-    client_socket.send(encrypted_exit_message)
-    exit_flag = True
-    client_socket.close()
-    sys.exit(0)
-
 def send_message():
     """Sends messages to the server."""
-    global exit_flag
-    while True:
-        try:
-            if exit_flag:
-                break
-            message = input(f"{colored('You: ', 'green')}")
-            encrypted_message = aes_encrypt(message.encode('utf-8'), session_key)
-            client_socket.send(encrypted_message)
-            
-            # Save chat history
-            save_chat_history(message)
-
-            if message == "#exit":
-                exit_flag = True
-                break
-        except Exception as e:
-            print(f"Error sending message: {e}")
-            break
+    message = message_input.get()
+    if message:
+        encrypted_message = aes_encrypt(message.encode('utf-8'), session_key)
+        client_socket.send(encrypted_message)
+        save_chat_history(message)
+        chat_area.config(state=NORMAL)
+        chat_area.insert(END, f"You: {message}\n")
+        chat_area.config(state=DISABLED)
+        message_input.delete(0, END)
 
 def receive_message():
     """Receives messages from the server."""
-    global exit_flag
     while True:
         try:
-            if exit_flag:
-                break
             encrypted_message = client_socket.recv(MAX_LEN)
             message = aes_decrypt(encrypted_message, session_key).decode('utf-8')
-            print(message)
-            # Save received message to history
+            chat_area.config(state=NORMAL)
+            chat_area.insert(END, f"{message}\n")
+            chat_area.config(state=DISABLED)
             save_chat_history(message)
         except Exception as e:
-            print(f"Error receiving message: {e}")
+            messagebox.showerror("Error", f"Connection error: {e}")
             break
 
-def generate_session_key():
-    """Generates a session key for AES encryption."""
-    from Crypto.Random import get_random_bytes
-    return get_random_bytes(16)  # AES key size is typically 16, 24, or 32 bytes
+def authenticate(action):
+    """Handles login or signup."""
+    username = username_input.get()
+    password = password_input.get()
+    hashed_password = hash_password(password)
+
+    if action == "signup":
+        with open("userdata.txt", "a") as f:
+            f.write(f"{username} {hashed_password}\n")
+        messagebox.showinfo("Success", "Signup successful!")
+    elif action == "login":
+        try:
+            with open("userdata.txt", "r") as f:
+                for line in f:
+                    stored_name, stored_password = line.strip().split()
+                    if stored_name == username and stored_password == hashed_password:
+                        encrypted_name = aes_encrypt(username.encode('utf-8'), session_key)
+                        client_socket.send(encrypted_name)
+                        messagebox.showinfo("Success", f"Welcome back, {username}!")
+                        chat_window()
+                        return
+        except FileNotFoundError:
+            pass
+        messagebox.showerror("Error", "Login failed. Check your username and password.")
+
+def chat_window():
+    """Opens the chat window."""
+    login_window.destroy()
+    global chat_area, message_input
+    chat_win = Tk()
+    chat_win.title("Chat Room")
+
+    # Chat area
+    chat_area = Text(chat_win, state=DISABLED, wrap=WORD)
+    chat_area.pack(pady=10, padx=10, fill=BOTH, expand=True)
+
+    # Message input
+    message_frame = Frame(chat_win)
+    message_frame.pack(fill=X, padx=10, pady=10)
+    message_input = Entry(message_frame, width=70)
+    message_input.pack(side=LEFT, fill=X, expand=True, padx=5)
+    send_button = Button(message_frame, text="Send", command=send_message)
+    send_button.pack(side=RIGHT)
+
+    # Start receiving messages
+    threading.Thread(target=receive_message, daemon=True).start()
+
+    chat_win.mainloop()
+
+def main_window():
+    """Main login/signup window."""
+    global login_window, username_input, password_input
+    login_window = Tk()
+    login_window.title("Login/Signup")
+
+    # Username
+    Label(login_window, text="Username").pack(pady=5)
+    username_input = Entry(login_window)
+    username_input.pack(pady=5)
+
+    # Password
+    Label(login_window, text="Password").pack(pady=5)
+    password_input = Entry(login_window, show="*")
+    password_input.pack(pady=5)
+
+    # Buttons
+    Button(login_window, text="Login", command=lambda: authenticate("login")).pack(side=LEFT, padx=10, pady=10)
+    Button(login_window, text="Signup", command=lambda: authenticate("signup")).pack(side=RIGHT, padx=10, pady=10)
+
+    login_window.mainloop()
 
 def main():
     global client_socket, session_key
     load_server_public_key()
 
-    # Generate a session key for AES encryption
-    session_key = generate_session_key()
+    # Generate a session key
+    session_key = os.urandom(16)
 
-    # Set up client socket
+    # Connect to the server
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        client_socket.connect((SERVER_IP, SERVER_PORT))
-        print(colored("Connected to server successfully!", "cyan"))
-    except Exception as e:
-        print(f"Failed to connect to server: {e}")
-        sys.exit(1)
-
-    # Send session key to the server using RSA encryption
+    client_socket.connect((SERVER_IP, SERVER_PORT))
     encrypted_session_key = rsa_encrypt(session_key)
     client_socket.send(encrypted_session_key)
 
     # Save the session key for chat history encryption
-    save_chat_key()
+    with open(CHAT_KEY_FILE, "wb") as f:
+        f.write(session_key)
 
-    # Handle Ctrl+C
-    signal.signal(signal.SIGINT, signal_handler)
-
-    # Authentication
-    logged_in = False
-    while not logged_in:
-        print("Choose an option:\n1. Sign Up\n2. Log In")
-        choice = input("Your choice: ").strip()
-        if choice == "1":
-            signup()
-        elif choice == "2":
-            if login():
-                logged_in = True
-        else:
-            print("Invalid choice!")
-
-    # Start send and receive threads
-    send_thread = threading.Thread(target=send_message)
-    receive_thread = threading.Thread(target=receive_message)
-    send_thread.start()
-    receive_thread.start()
-
-    send_thread.join()
-    receive_thread.join()
+    main_window()
 
 if __name__ == "__main__":
     main()
